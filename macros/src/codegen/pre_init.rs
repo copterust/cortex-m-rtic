@@ -32,28 +32,47 @@ pub fn codegen(app: &App, analysis: &Analysis, extra: &Extra) -> Vec<TokenStream
     let device = &extra.device;
     let nvic_prio_bits = quote!(#device::NVIC_PRIO_BITS);
 
-    let interrupt_ids = analysis.interrupts.iter().map(|(p, (id, _))| (p, id));
+    let empty = "".to_string();
+    let interrupt_ids = analysis
+        .interrupts
+        .iter()
+        .map(|(p, (id, _))| (p, id, &empty));
 
     // Unmask interrupts and set their priorities
-    for (&priority, name) in interrupt_ids.chain(app.hardware_tasks.values().flat_map(|task| {
-        if !util::is_exception(&task.args.binds) {
-            Some((&task.args.priority, &task.args.binds))
-        } else {
-            // We do exceptions in another pass
-            None
-        }
-    })) {
+    let interrupts_g = interrupt_ids.chain(app.hardware_tasks.values().flat_map(|task| {
+        task.args
+            .binds
+            .iter()
+            .filter(|(bind, _cfg_name)| !util::is_exception(&bind))
+            .map(move |(bind, cfg_name)| (&task.args.priority, bind, cfg_name))
+    }));
+
+    for (&priority, name, cfg) in interrupts_g {
         // Compile time assert that this priority is supported by the device
         stmts.push(quote!(let _ = [(); ((1 << #nvic_prio_bits) - #priority as usize)];));
 
         // NOTE this also checks that the interrupt exists in the `Interrupt` enumeration
         let interrupt = util::interrupt_ident();
-        stmts.push(quote!(
-            core.NVIC.set_priority(
-                #rt_err::#interrupt::#name,
-                rtic::export::logical2hw(#priority, #nvic_prio_bits),
-            );
-        ));
+        if cfg.is_empty() {
+            stmts.push(quote!(
+                core.NVIC.set_priority(
+                    you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::#interrupt::#name,
+                    rtic::export::logical2hw(#priority, #nvic_prio_bits),
+                );
+                rtic::export::NVIC::unmask(you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::#interrupt::#name);
+            ));
+        } else {
+            stmts.push(quote!(
+                if cfg!(configuration = #cfg) {
+                    core.NVIC.set_priority(
+                        you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::#interrupt::#name,
+                        rtic::export::logical2hw(#priority, #nvic_prio_bits),
+                    );
+
+                    rtic::export::NVIC::unmask(you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::#interrupt::#name);
+                }
+            ));
+        }
 
         // NOTE unmask the interrupt *after* setting its priority: changing the priority of a pended
         // interrupt is implementation defined
@@ -61,20 +80,31 @@ pub fn codegen(app: &App, analysis: &Analysis, extra: &Extra) -> Vec<TokenStream
     }
 
     // Set exception priorities
-    for (name, priority) in app.hardware_tasks.values().filter_map(|task| {
-        if util::is_exception(&task.args.binds) {
-            Some((&task.args.binds, task.args.priority))
-        } else {
-            None
-        }
-    }) {
-        // Compile time assert that this priority is supported by the device
+    let exceptions = app.hardware_tasks.values().flat_map(|task| {
+        task.args
+            .binds
+            .iter()
+            .filter(|(bind, _cfg_name)| util::is_exception(&bind))
+            .map(move |(bind, cfg_name)| (&task.args.priority, bind, cfg_name))
+    });
+    for (priority, name, cfg) in exceptions {
+        // // Compile time assert that this priority is supported by the device
         stmts.push(quote!(let _ = [(); ((1 << #nvic_prio_bits) - #priority as usize)];));
 
-        stmts.push(quote!(core.SCB.set_priority(
-            rtic::export::SystemHandler::#name,
-            rtic::export::logical2hw(#priority, #nvic_prio_bits),
-        );));
+        if cfg.is_empty() {
+            stmts.push(quote!(core.SCB.set_priority(
+                rtic::export::SystemHandler::#name,
+                rtic::export::logical2hw(#priority, #nvic_prio_bits),
+            );));
+        } else {
+            stmts.push(quote!(
+            if cfg!(configuration = #cfg) {
+                core.SCB.set_priority(
+                    rtic::export::SystemHandler::#name,
+                    rtic::export::logical2hw(#priority, #nvic_prio_bits),
+                );
+            }));
+        }
     }
 
     // Initialize monotonic's interrupts

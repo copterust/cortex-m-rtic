@@ -59,16 +59,18 @@ pub fn app(app: &App, _analysis: &Analysis) -> parse::Result<Extra> {
     // Check that all exceptions are valid; only exceptions with configurable priorities are
     // accepted
     for (name, task) in &app.hardware_tasks {
-        let name_s = task.args.binds.to_string();
-        match &*name_s {
-            "NonMaskableInt" | "HardFault" => {
-                return Err(parse::Error::new(
-                    name.span(),
-                    "only exceptions with configurable priority can be used as hardware tasks",
-                ));
-            }
+        for (_, bind) in task.args.binds.iter() {
+            let name_s = bind.to_string();
+            match &*name_s {
+                "NonMaskableInt" | "HardFault" => {
+                    return Err(parse::Error::new(
+                        name.span(),
+                        "only exceptions with configurable priority can be used as hardware tasks",
+                    ));
+                }
 
-            _ => {}
+                _ => {}
+            }
         }
     }
 

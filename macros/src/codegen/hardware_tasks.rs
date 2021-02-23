@@ -35,25 +35,31 @@ pub fn codegen(
             quote!(#name::Locals::new(),)
         };
 
-        let symbol = task.args.binds.clone();
-        let priority = task.args.priority;
+        for (symbol, cfg) in task.args.binds.iter() {
+            let priority = task.args.priority;
 
-        let app_name = &app.name;
-        let app_path = quote! {crate::#app_name};
-        mod_app.push(quote!(
-            #[allow(non_snake_case)]
-            #[no_mangle]
-            unsafe fn #symbol() {
-                const PRIORITY: u8 = #priority;
-
-                rtic::export::run(PRIORITY, || {
-                    #app_path::#name(
-                        #locals_new
-                        #name::Context::new(&rtic::export::Priority::new(PRIORITY))
-                    )
-                });
+            let app_name = &app.name;
+            let app_path = quote! {crate::#app_name};
+            mod_app.push(quote!(
+                #[allow(non_snake_case)]
+                #[no_mangle]
+            ));
+            if !cfg.is_empty() {
+                mod_app.push(quote!(#[cfg(configuration=#cfg)]));
             }
-        ));
+            mod_app.push(quote!(
+                unsafe fn #symbol() {
+                    const PRIORITY: u8 = #priority;
+
+                    rtic::export::run(PRIORITY, || {
+                        #app_path::#name(
+                            #locals_new
+                            #name::Context::new(&rtic::export::Priority::new(PRIORITY))
+                        )
+                    });
+                }
+            ));
+        }
 
         let mut needs_lt = false;
 
